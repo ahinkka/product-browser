@@ -1,16 +1,18 @@
 ;; -*- geiser-scheme-implementation: racket -*-
 #lang racket
 
+(require racket/vector)
+
 (require ffi/unsafe
-         ffi/unsafe/define
-         ffi/file)
+         ffi/unsafe/define)
 
 (require "common.rkt")
 
 (provide
  polygon
  polygon-rings
- find-polygons)
+ find-polygons
+ find-polygons-cached)
 
 (define-ffi-definer define-shp (ffi-lib "libshp.so.1"))
 
@@ -182,5 +184,20 @@
   (let* ([shape-file-handle (SHPOpen shape-file "rb")]
 	 [indices (index-lookup index-file-path min-coordinate max-coordinate)])
     (let ([result (map (lambda (index) (extract-polygon shape-file-handle index)) indices)])
+      (SHPClose shape-file-handle)
+      result)))
+
+(define polygon-cache (make-weak-hash))
+
+(define (find-polygons-cached shape-file index-file-path min-coordinate max-coordinate)
+  (let* ([shape-file-handle (SHPOpen shape-file "rb")]
+         [indices (index-lookup index-file-path min-coordinate max-coordinate)])
+
+    (let ([result (map
+                   (lambda (index)
+                     (hash-ref! polygon-cache index
+                                (thunk
+                                 (extract-polygon shape-file-handle index))))
+                   indices)])
       (SHPClose shape-file-handle)
       result)))

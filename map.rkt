@@ -1,104 +1,209 @@
 #lang racket
+(require profile)
 (require racket/gui/base)
 (require "common.rkt")
 (require "shape-reader.rkt")
+(require "projection.rkt")
 
 (provide make-map)
+
+(module+ test
+  (require rackunit)
+  (define ε 1e-10))
 
 (define borders-shape-file "data/TM_WORLD_BORDERS-0.3.shp")
 (define borders-index-file "data/TM_WORLD_BORDERS-0.3.idx")
 
-(define-struct translation
-  [min
-   max
-   pixel-height
-   pixel-width] #:transparent)
+(define (halved number times)
+  (if (<= times 1)
+      (/ number 2)
+      (halved (/ number 2) (- times 1))))
+
+(define (map-state-mixin %)
+  (class % (super-new)
+
+    (field (zoom-level 4))
+    (field (resolutions (reverse
+                         (stream->list (stream-map (lambda (x) (halved 1.0 x)) (in-range 1 15))))))
+    (field (map-center #f))
+
+    (define/public (zoom-out)
+      (printf "Zoom out from ~a~%" zoom-level)
+      (let ([new-zoom-level (- zoom-level 1)])
+	(when (> new-zoom-level 0)
+	  (set! zoom-level new-zoom-level)
+	  (send this refresh))))
+
+    (define/public (zoom-in)
+      (printf "Zoom in from ~a~%" zoom-level)
+      (let ([new-zoom-level (+ zoom-level 1)])
+	(when (< new-zoom-level (length resolutions))
+	  (set! zoom-level new-zoom-level)
+	  (send this refresh))))
+
+    (define/public (set-center new-center) (set! map-center new-center) (send this refresh))
+    (define/public (get-center) map-center)
+    (define/public (get-resolution) (list-ref resolutions zoom-level))))
+
+(define (draggable-mixin %)
+  (class % (super-new)
+
+    (field (drag-start-event #f))
+
+    (define/override (on-event event)
+      (let ([x (send event get-x)]
+            [y (send event get-y)])
+
+        (when (send event dragging?)
+          (unless drag-start-event (set! drag-start-event event))
+          (printf "Dragging: ~a (~a, ~a)~%" event x y))
+
+        (when (and drag-start-event (eq? (send event get-event-type) 'left-up))
+          (printf "Drag start: ~a (~a, ~a)~%" drag-start-event
+                  (send drag-start-event get-x) (send drag-start-event get-y))
+          (printf "Drag end: ~a (~a, ~a)~%" event x y)
+
+          (let-values ([(canvas-width canvas-height) (send this get-size)])
+            (let* ([map-center (send this get-center)]
+                   [resolution (send this get-resolution)]
+                   [drag-start-aeq (pixel-to-aeq (pixel (send drag-start-event get-x)
+                                                        (send drag-start-event get-y))
+                                                 resolution canvas-width canvas-height)]
+                   [drag-end-aeq (pixel-to-aeq (pixel x y) resolution canvas-width canvas-height)]
+
+                   [drag-start-coordinate (aeq-to-wgs84 map-center drag-start-aeq)]
+                   [drag-end-coordinate (aeq-to-wgs84 map-center drag-end-aeq)]
+
+                   [delta-x-amount (abs (- (lonlat-longitude drag-start-coordinate) (lonlat-longitude drag-end-coordinate)))]
+                   [delta-y-amount (abs (- (lonlat-latitude drag-start-coordinate) (lonlat-latitude drag-end-coordinate)))]
+
+                   [delta-x (if (> (lonlat-longitude drag-start-coordinate) (lonlat-longitude drag-end-coordinate))
+                                delta-x-amount
+                                (* -1 delta-x-amount))]
+                   [delta-y (if (> (lonlat-latitude drag-start-coordinate) (lonlat-latitude drag-end-coordinate))
+                                (* -1 delta-y-amount)
+                                delta-y-amount)])
+
+              (send this set-center (lonlat (+ (lonlat-longitude map-center) delta-x)
+                                            (+ (lonlat-latitude map-center) delta-y))))
+            (set! drag-start-event #f)))))))
+
+(define (zoomable-mixin %)
+  (class % (super-new)
+    (define/override (on-char event)
+      (match (send event get-key-code)
+        ['wheel-up (send this zoom-in)]
+        ['wheel-down (send this zoom-out)]))))
+
+(define map-canvas% (zoomable-mixin (draggable-mixin (map-state-mixin canvas%))))
+
+(define (render-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
+                                   #:current-coordinate [current-coordinate #f]
+                                   #:dc-path [dc-path (new dc-path%)]
+                                   #:path-started [path-started #f])
+  (let* ([current-in-aeq (if current-coordinate current-coordinate
+                             (projection-transform WGS-84 projection (car points)))]
+         [next-in-aeq (projection-transform WGS-84 projection (cadr points))]
+         [current-in-bounds (within-aeq-bounds bounds current-in-aeq)]
+         [next-in-bounds (within-aeq-bounds bounds next-in-aeq)])
+
+    (if (or current-in-bounds next-in-bounds)
+        (let ([px (aeq-to-pixel current-in-aeq resolution canvas-width canvas-height)])
+          (if path-started
+              (send dc-path line-to (pixel-x px) (pixel-y px))
+              (send dc-path move-to (pixel-x px) (pixel-y px)))
+
+          (render-points dc projection bounds resolution canvas-width canvas-height (cdr points)
+                         #:current-coordinate next-in-aeq
+                         #:dc-path dc-path
+                         #:path-started #t))
+
+        (if path-started
+            (let ([px (aeq-to-pixel current-in-aeq resolution canvas-width canvas-height)])
+              (send dc-path line-to (pixel-x px) (pixel-y px))
+              (send dc draw-path dc-path)
+              (render-points dc projection bounds resolution canvas-width canvas-height (cdr points)
+                             #:current-coordinate next-in-aeq))
+            (render-points dc projection bounds resolution canvas-width canvas-height (cdr points)
+                           #:current-coordinate next-in-aeq
+                           #:dc-path dc-path)))))
+
+(define (render-points-exactly-one dc projection bounds resolution canvas-width canvas-height points
+                                   #:current-coordinate [current-coordinate #f]
+                                   #:dc-path [dc-path (new dc-path%)]
+                                   #:path-started [path-started #f])
+  (when path-started
+    (let ([px (aeq-to-pixel
+               (if current-coordinate current-coordinate
+                   (projection-transform WGS-84 projection (car points)))
+               resolution canvas-width canvas-height)])
+      (send dc-path line-to (pixel-x px) (pixel-y px))
+      (send dc draw-path dc-path))))
+
+(define (render-points dc projection bounds resolution canvas-width canvas-height points
+                       #:current-coordinate [current-coordinate #f]
+                       #:dc-path [dc-path (new dc-path%)]
+                       #:path-started [path-started #f])
+  (cond
+    [(two-or-more-members points)
+     (render-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
+                                #:current-coordinate current-coordinate
+                                #:dc-path dc-path
+                                #:path-started path-started)]
+
+    [(exactly-one-member points)
+     (render-points-exactly-one dc projection bounds resolution canvas-width canvas-height points
+                                #:current-coordinate current-coordinate
+                                #:dc-path dc-path
+                                #:path-started path-started)]
+    [else
+     (printf "No match: ~a~%" points)]))
 
 
-(define-struct pixel
-  [x y]
-
-  #:property prop:custom-write
-  (lambda (pixel port write?)
-    (fprintf port (if write? "(~a, ~a)" "(~a,~a}")
-             (pixel-x pixel) (pixel-y pixel))))
-
-
-(define (translate translation coordinate)
-  (let* ([min-degrees (translation-min translation)]
-         [max-degrees (translation-max translation)]
-         [degree-width (- (lonlat-longitude max-degrees) (lonlat-longitude min-degrees))]
-         [degree-height (- (lonlat-latitude max-degrees) (lonlat-latitude min-degrees))]
-         [horizontal-density (/ (translation-pixel-width translation) degree-width)]
-         [vertical-density (/ (translation-pixel-height translation) degree-height)])
-    
-    (pixel
-     (* (- (lonlat-longitude max-degrees) (lonlat-longitude coordinate))
-        horizontal-density)
-     (* (- (lonlat-latitude coordinate) (lonlat-latitude min-degrees))
-        vertical-density))))
+(define (do-draw dc resolution map-center polygons)
+  (let-values ([(canvas-width canvas-height) (send dc get-size)])
+    (let ([aeq-projection* (aeq-projection map-center)]
+          [bounds (aeq-bounds resolution canvas-width canvas-height)])
+      (for-each
+       (lambda (polygon)
+         (for-each
+          (lambda (ring)
+            (render-points dc aeq-projection* bounds resolution canvas-width canvas-height ring))
+          (polygon-rings polygon)))
+       polygons))))
 
 
-(define (within-translation translation coordinate)
-  (let ([result
-	 (let ([min (translation-min translation)]
-	       [max (translation-max translation)])
-	   (and 
-	    [>= (lonlat-latitude max) (lonlat-latitude coordinate)]
-	    [<= (lonlat-latitude min) (lonlat-latitude coordinate)]
-	    
-	    [>= (lonlat-longitude max) (lonlat-longitude coordinate)]
-	    [<= (lonlat-longitude min) (lonlat-longitude coordinate)]))])
-    result))
+(define (paint-map canvas dc)
+  (let-values ([(canvas-width canvas-height) (send dc get-size)])
+    (let* ([start (current-inexact-milliseconds)]
+
+           [resolution (send canvas get-resolution)]
+	   [map-center (send canvas get-center)]
+
+	   [viewport-x-max-aeq (/ (/ canvas-width 2) resolution)]
+	   [viewport-y-max-aeq (/ (/ canvas-height 2) resolution)]
+	   [viewport-x-min-aeq (* -1.0 viewport-x-max-aeq)]
+	   [viewport-y-min-aeq (* -1.0 viewport-x-max-aeq)]
+	   [viewport-min-aeq (lonlat viewport-x-min-aeq viewport-y-min-aeq)]
+	   [viewport-max-aeq (lonlat viewport-x-max-aeq viewport-y-max-aeq)]
+
+	   [viewport-min-wgs84 (aeq-to-wgs84 map-center viewport-min-aeq)]
+	   [viewport-max-wgs84 (aeq-to-wgs84 map-center viewport-max-aeq)])
+      (printf "@paint-map begin [~a, ~a] @ ~a~%" viewport-min-wgs84 viewport-max-wgs84 resolution)
+
+      (send canvas suspend-flush)
+      ;; (profile-thunk
+      ;;  (thunk
+      (do-draw dc resolution map-center
+               (find-polygons-cached borders-shape-file borders-index-file viewport-min-wgs84 viewport-max-wgs84))
+        ;; ))
+      (send canvas resume-flush)
+
+      (printf "@paint-map end, took ~a ms~%" (- (current-inexact-milliseconds) start)))))
 
 
-(define (find-cdr proc lst)
-  (if (not (pair? lst))
-      #f
-      (if (proc (car lst))
-          lst
-          (if (and 
-               (pair? (cdr lst))
-               (not (empty? (cdr lst))))
-              (if (proc (cadr lst))
-                  lst
-                  (find-cdr proc (cdr lst)))
-              #f))))
-
-
-(define (make-map parent)
-  (let* ([min-coordinate (lonlat 14.0 49.0)]
-	 [max-coordinate (lonlat 36.0 71.0)]
-	 [polygons (find-polygons borders-shape-file borders-index-file min-coordinate max-coordinate)])
-
-    (new canvas% [parent parent]
-	 [paint-callback
-	  (lambda (canvas dc)
-	    (let-values ([(canvas-width canvas-height) (send dc get-size)])
-	      (let
-		  ([current-translation (translation min-coordinate max-coordinate
-						     canvas-width canvas-height)])
-		(for-each
-		 (lambda (polygon)
-		   (for-each
-		    (lambda (ring)
-		      (let ([start-from (find-cdr
-					 (lambda (item) (within-translation current-translation item))
-					 ring)]
-			    [dc-path (new dc-path%)])
-			(when start-from
-			  (let* ([translated (translate current-translation (car start-from))]
-				 [x (- canvas-width (pixel-x translated))]
-				 [y (- canvas-height (pixel-y translated))])
-			    (send dc-path move-to x y))
-			
-			  (for-each
-			   (lambda (point)
-			     (let* ([translated (translate current-translation point)]
-				    [x (- canvas-width (pixel-x translated))]
-				    [y (- canvas-height (pixel-y translated))])
-			       (send dc-path line-to x y)))
-			   (cdr start-from))
-			  (send dc draw-path dc-path))))
-		    (polygon-rings polygon)))
-		 polygons))))])))
+(define (make-map parent status-line-callback)
+  (let* ([initial-wgs84-center (lonlat 24.935 60.19)]
+	 [map-canvas (new map-canvas% [parent parent] [paint-callback paint-map])])
+    (send map-canvas set-center initial-wgs84-center)
+    map-canvas))
