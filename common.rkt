@@ -1,7 +1,8 @@
 #lang racket
 
 (module+ test
-  (require rackunit))
+  (require rackunit)
+  (define ε 1e-10))
 
 (provide
  lonlat
@@ -87,18 +88,52 @@
          [y (- (/ canvas-height 2) scaled-y)])
     (pixel x y)))
 
+(module+ test
+  (let ([px (aeq-to-pixel (lonlat 0 0) 1 400 400)])
+    (check-= (pixel-x px) 200 ε)
+    (check-= (pixel-y px) 200 ε))
+
+  (let ([px (aeq-to-pixel (lonlat -100 100) 1 400 400)])
+    (check-= (pixel-x px) 100 ε)
+    (check-= (pixel-y px) 100 ε))
+
+  (let ([px (aeq-to-pixel (lonlat 100 100) 1 400 400)])
+    (check-= (pixel-x px) 300 ε)
+    (check-= (pixel-y px) 100 ε))
+
+  (let ([px (aeq-to-pixel (lonlat -100 -100) 1 400 400)])
+    (check-= (pixel-x px) 100 ε)
+    (check-= (pixel-y px) 300 ε)))
+
 (define (pixel-to-aeq px resolution canvas-width canvas-height)
   (let* ([centered-x (- (pixel-x px) (/ canvas-width 2))]
-         [centered-y (+ (pixel-y px) (/ canvas-height 2))]
+         [centered-y (- (- canvas-height (pixel-y px)) (/ canvas-height 2))]
          [x (/ centered-x resolution)]
          [y (/ centered-y resolution)])
     (lonlat x y)))
 
+(module+ test
+  (let ([coordinate (pixel-to-aeq (pixel 200 200) 1 400 400)])
+    (check-= (lonlat-longitude coordinate) 0 ε)
+    (check-= (lonlat-latitude coordinate) 0 ε))
+
+  (let ([coordinate (pixel-to-aeq (pixel 100 100) 1 400 400)])
+    (check-= (lonlat-longitude coordinate) -100 ε)
+    (check-= (lonlat-latitude coordinate) 100 ε))
+
+  (let ([coordinate (pixel-to-aeq (pixel 300 300) 1 400 400)])
+    (check-= (lonlat-longitude coordinate) 100 ε)
+    (check-= (lonlat-latitude coordinate) -100 ε))
+
+  (let ([coordinate (pixel-to-aeq (pixel 100 300) 1 400 400)])
+    (check-= (lonlat-longitude coordinate) -100 ε)
+    (check-= (lonlat-latitude coordinate) -100 ε)))
+
 (define (aeq-bounds resolution canvas-width canvas-height)
   (let ([upper-left (pixel-to-aeq (pixel 0 0) resolution canvas-width canvas-height)]
         [upper-right (pixel-to-aeq (pixel canvas-width 0) resolution canvas-width canvas-height)]
-        [lower-left (pixel-to-aeq (pixel 0 (* -1 canvas-height)) resolution canvas-width canvas-height)]
-        [lower-right (pixel-to-aeq (pixel canvas-width (* -1 canvas-height)) resolution canvas-width canvas-height)])
+        [lower-left (pixel-to-aeq (pixel 0 canvas-height) resolution canvas-width canvas-height)]
+        [lower-right (pixel-to-aeq (pixel canvas-width canvas-height) resolution canvas-width canvas-height)])
     (cons
      (lonlat
       (min (lonlat-longitude upper-left)

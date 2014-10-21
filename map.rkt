@@ -45,6 +45,28 @@
     (define/public (get-center) map-center)
     (define/public (get-resolution) (list-ref resolutions zoom-level))))
 
+(define (doubleclick-mixin %)
+  (class % (super-new)
+
+    (field (last-left-down #f))
+    (field (doubleclick-delay 300))
+
+    (define/override (on-event event)
+      (when (eq? (send event get-event-type) 'left-down)
+        (if last-left-down
+            (if (< (- (current-inexact-milliseconds) last-left-down) doubleclick-delay)
+                (let ([x (send event get-x)]
+                      [y (send event get-y)])
+                  (let-values ([(canvas-width canvas-height) (send this get-size)])
+                    (let* ([aeq-coordinate (pixel-to-aeq (pixel x y) (send this get-resolution) canvas-width canvas-height)]
+                           [coordinate (aeq-to-wgs84 (send this get-center) aeq-coordinate)])
+                      (printf "Centering on ~a~%" coordinate)
+                      (send this set-center coordinate)))
+                  (set! last-left-down #f))
+                (set! last-left-down (current-inexact-milliseconds)))
+            (set! last-left-down (current-inexact-milliseconds))))
+      (super on-event event))))
+
 (define (draggable-mixin %)
   (class % (super-new)
 
@@ -80,7 +102,7 @@
                    [delta-x (if (> (lonlat-longitude drag-start-coordinate) (lonlat-longitude drag-end-coordinate))
                                 delta-x-amount
                                 (* -1 delta-x-amount))]
-                   [delta-y (if (> (lonlat-latitude drag-start-coordinate) (lonlat-latitude drag-end-coordinate))
+                   [delta-y (if (< (lonlat-latitude drag-start-coordinate) (lonlat-latitude drag-end-coordinate))
                                 (* -1 delta-y-amount)
                                 delta-y-amount)])
 
@@ -95,7 +117,7 @@
         ['wheel-up (send this zoom-in)]
         ['wheel-down (send this zoom-out)]))))
 
-(define map-canvas% (zoomable-mixin (draggable-mixin (map-state-mixin canvas%))))
+(define map-canvas% (zoomable-mixin (doubleclick-mixin (draggable-mixin (map-state-mixin canvas%)))))
 
 (define (render-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
                                    #:current-coordinate [current-coordinate #f]
