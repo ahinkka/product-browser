@@ -117,8 +117,54 @@
         ['wheel-up (send this zoom-in)]
         ['wheel-down (send this zoom-out)]))))
 
-(define map-canvas% (zoomable-mixin (doubleclick-mixin (draggable-mixin (map-state-mixin canvas%)))))
+(define (map-rendering-mixin %)
+  (class % (super-new)
+    (define/private (do-paint dc resolution map-center polygons)
+      (let-values ([(canvas-width canvas-height) (send dc get-size)])
+        (let ([aeq-projection* (aeq-projection map-center)]
+              [bounds (aeq-bounds resolution canvas-width canvas-height)])
+          (for-each
+           (lambda (polygon)
+             (for-each
+              (lambda (ring)
+                (render-points dc aeq-projection* bounds resolution canvas-width canvas-height ring))
+              (polygon-rings polygon)))
+           polygons))))
 
+    (define/public (paint-map canvas dc)
+      (let-values ([(canvas-width canvas-height) (send dc get-size)])
+        (let* ([start (current-inexact-milliseconds)]
+               [resolution (send canvas get-resolution)]
+               [map-center (send canvas get-center)]
+
+               [viewport-x-max-aeq (/ (/ canvas-width 2) resolution)]
+               [viewport-y-max-aeq (/ (/ canvas-height 2) resolution)]
+               [viewport-x-min-aeq (* -1.0 viewport-x-max-aeq)]
+               [viewport-y-min-aeq (* -1.0 viewport-x-max-aeq)]
+               [viewport-min-aeq (lonlat viewport-x-min-aeq viewport-y-min-aeq)]
+               [viewport-max-aeq (lonlat viewport-x-max-aeq viewport-y-max-aeq)]
+
+               [viewport-min-wgs84 (aeq-to-wgs84 map-center viewport-min-aeq)]
+               [viewport-max-wgs84 (aeq-to-wgs84 map-center viewport-max-aeq)])
+          (printf "@paint-map begin [~a, ~a] @ ~a~%" viewport-min-wgs84 viewport-max-wgs84 resolution)
+
+          (send canvas suspend-flush)
+          ;; (profile-thunk
+          ;;  (thunk
+          (do-paint dc resolution map-center
+                   (find-polygons-cached borders-shape-file borders-index-file viewport-min-wgs84 viewport-max-wgs84))
+          ;; ))
+          (send canvas resume-flush)
+
+          (printf "@paint-map end, took ~a ms~%" (- (current-inexact-milliseconds) start)))))))
+
+
+(define map-canvas% (map-rendering-mixin (zoomable-mixin (doubleclick-mixin (draggable-mixin (map-state-mixin canvas%))))))
+
+
+;;;
+;;; Polygon rendering
+;;;
 (define (render-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
                                    #:current-coordinate [current-coordinate #f]
                                    #:dc-path [dc-path (new dc-path%)]
@@ -182,50 +228,12 @@
      (printf "No match: ~a~%" points)]))
 
 
-(define (do-draw dc resolution map-center polygons)
-  (let-values ([(canvas-width canvas-height) (send dc get-size)])
-    (let ([aeq-projection* (aeq-projection map-center)]
-          [bounds (aeq-bounds resolution canvas-width canvas-height)])
-      (for-each
-       (lambda (polygon)
-         (for-each
-          (lambda (ring)
-            (render-points dc aeq-projection* bounds resolution canvas-width canvas-height ring))
-          (polygon-rings polygon)))
-       polygons))))
-
-
-(define (paint-map canvas dc)
-  (let-values ([(canvas-width canvas-height) (send dc get-size)])
-    (let* ([start (current-inexact-milliseconds)]
-
-           [resolution (send canvas get-resolution)]
-	   [map-center (send canvas get-center)]
-
-	   [viewport-x-max-aeq (/ (/ canvas-width 2) resolution)]
-	   [viewport-y-max-aeq (/ (/ canvas-height 2) resolution)]
-	   [viewport-x-min-aeq (* -1.0 viewport-x-max-aeq)]
-	   [viewport-y-min-aeq (* -1.0 viewport-x-max-aeq)]
-	   [viewport-min-aeq (lonlat viewport-x-min-aeq viewport-y-min-aeq)]
-	   [viewport-max-aeq (lonlat viewport-x-max-aeq viewport-y-max-aeq)]
-
-	   [viewport-min-wgs84 (aeq-to-wgs84 map-center viewport-min-aeq)]
-	   [viewport-max-wgs84 (aeq-to-wgs84 map-center viewport-max-aeq)])
-      (printf "@paint-map begin [~a, ~a] @ ~a~%" viewport-min-wgs84 viewport-max-wgs84 resolution)
-
-      (send canvas suspend-flush)
-      ;; (profile-thunk
-      ;;  (thunk
-      (do-draw dc resolution map-center
-               (find-polygons-cached borders-shape-file borders-index-file viewport-min-wgs84 viewport-max-wgs84))
-        ;; ))
-      (send canvas resume-flush)
-
-      (printf "@paint-map end, took ~a ms~%" (- (current-inexact-milliseconds) start)))))
-
-
+;;
+;; Exposed
+;;
 (define (make-map parent status-line-callback)
   (let* ([initial-wgs84-center (lonlat 24.935 60.19)]
-	 [map-canvas (new map-canvas% [parent parent] [paint-callback paint-map])])
+         [callback-wrapper (lambda (canvas dc) (send canvas paint-map canvas dc))]
+	 [map-canvas (new map-canvas% [parent parent] [paint-callback callback-wrapper])])
     (send map-canvas set-center initial-wgs84-center)
     map-canvas))

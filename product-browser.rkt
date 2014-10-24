@@ -11,13 +11,13 @@
                    [height 480]))
 
 
-;; (define splitter (new vertical-panel%
-;;                       [parent frame]))
+(define splitter (new vertical-panel%
+                      [parent frame]))
 
-;; (define top-container (new horizontal-panel%
-;;                             [parent splitter]
-;;                             [min-height 80]
-;;                             [stretchable-height #f]))
+(define top-container (new horizontal-panel%
+                            [parent splitter]
+                            [min-height 80]
+                            [stretchable-height #f]))
 
 (define menu-bar
   (new menu-bar%
@@ -44,22 +44,22 @@
 ;;      (label "&Help")
 ;;      (parent menu-bar))
 
-;; (define date-selection
-;;   (new group-box-panel%
-;;        [parent top-container]
-;;        [label "Date selection"]))
+(define date-selection
+  (new group-box-panel%
+       [parent top-container]
+       [label "Date selection"]))
 
-;; (define date-dropdown
-;;   (new combo-field%
-;;        [label "Date"]
-;;        [parent date-selection]
-;;        [choices (list "Today")]
-;;        [init-value "Today"]))
+(define date-dropdown
+  (new combo-field%
+       [label "Date"]
+       [parent date-selection]
+       [choices (list "Today")]
+       [init-value "Today"]))
   
 
 
-;; (define canvas (make-map splitter))
-(define canvas (make-map frame (lambda (line) (send frame set-status-text line))))
+(define canvas (make-map splitter (lambda (line) (send frame set-status-text line))))
+;; (define canvas (make-map frame (lambda (line) (send frame set-status-text line))))
 
 ;; (make-map frame)
 (send frame create-status-line)
