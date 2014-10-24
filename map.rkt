@@ -152,7 +152,7 @@
           ;; (profile-thunk
           ;;  (thunk
           (do-paint dc resolution map-center
-                   (find-polygons-cached borders-shape-file borders-index-file viewport-min-wgs84 viewport-max-wgs84))
+                   (find-shapes-cached borders-shape-file borders-index-file viewport-min-wgs84 viewport-max-wgs84))
           ;; ))
           (send canvas resume-flush)
 

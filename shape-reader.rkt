@@ -11,8 +11,8 @@
 (provide
  polygon
  polygon-rings
- find-polygons
- find-polygons-cached)
+ find-shapes
+ find-shapes-cached)
 
 (define-ffi-definer define-shp (ffi-lib "libshp.so.1"))
 
@@ -122,6 +122,7 @@
 
 ;;; Actual functionality
 (define-struct polygon (min-coordinate max-coordinate rings))
+(define-struct point (coordinate))
 
 (define (extract-part-vertices shape start end)
   (stream-map
@@ -179,25 +180,40 @@
 	     (lonlat shape-max-lon shape-max-lat)
 	     rings)))
 
+(define (extract-shape shape-file-handle shape-index)
+  (let* ([shape-pointer (SHPReadObject shape-file-handle shape-index)]
+         [shape-type (resolve-shape-type (SHPObject-nSHPType shape-pointer))])
+    (match shape-type
+      ['POLYGON (extract-polygon shape-file-handle shape-index)]
+      ['POINT (extract-point shape-file-handle shape-index)]
+      [_ (error (format "Shape type ~a is not supported" shape-type))])))
+
+(define (extract-point shape-file-handle shape-index)
+  (let* ([shape-pointer (SHPReadObject shape-file-handle shape-index)]
+         [x (ptr-ref (SHPObject-padfX shape-pointer) _double)]
+         [y (ptr-ref (SHPObject-padfY shape-pointer) _double)])
+    (point (lonlat x y))))
+
 ;; Exported functions
-(define (find-polygons shape-file index-file-path min-coordinate max-coordinate)
+(define (find-shapes shape-file index-file-path min-coordinate max-coordinate)
   (let* ([shape-file-handle (SHPOpen shape-file "rb")]
 	 [indices (index-lookup index-file-path min-coordinate max-coordinate)])
     (let ([result (map (lambda (index) (extract-polygon shape-file-handle index)) indices)])
       (SHPClose shape-file-handle)
       result)))
 
-(define polygon-cache (make-weak-hash))
+(define shape-caches (make-weak-hash))
 
-(define (find-polygons-cached shape-file index-file-path min-coordinate max-coordinate)
-  (let* ([shape-file-handle (SHPOpen shape-file "rb")]
+(define (find-shapes-cached shape-file index-file-path min-coordinate max-coordinate)
+  (let* ([cache (hash-ref! shape-caches shape-file (thunk (make-weak-hash)))]
+         [shape-file-handle (SHPOpen shape-file "rb")]
          [indices (index-lookup index-file-path min-coordinate max-coordinate)])
 
     (let ([result (map
                    (lambda (index)
-                     (hash-ref! polygon-cache index
+                     (hash-ref! cache index
                                 (thunk
-                                 (extract-polygon shape-file-handle index))))
+                                 (extract-shape shape-file-handle index))))
                    indices)])
       (SHPClose shape-file-handle)
       result)))
