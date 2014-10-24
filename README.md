@@ -19,7 +19,7 @@ install from your OS.
     	$(CC) -shared -Wl,-soname,libshp.so.1 -o libshp.so.1 $(LIBOBJ) -lc
 
 - Index created from World borders into a file with .idx extension. Run
-  `shptreedump -maxdepth 12 -v -o data/TM_WORLD_BORDERS-0.3..idx data/TM_WORLD_BORDERS-0.3.`
+  `shptreedump -maxdepth 12 -v -o data/TM_WORLD_BORDERS-0.3.idx data/TM_WORLD_BORDERS-0.3.`
   or similar to do that.
 
 
