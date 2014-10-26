@@ -12,7 +12,9 @@
   (define ε 1e-10))
 
 (define borders-shape-file "data/TM_WORLD_BORDERS-0.3.shp")
+(define cities-shape-file "data/cities.shp")
 (define borders-index-file "data/TM_WORLD_BORDERS-0.3.idx")
+(define cities-index-file "data/cities.idx")
 
 (define (halved number times)
   (if (<= times 1)
@@ -119,7 +121,8 @@
 
 (define (map-rendering-mixin %)
   (class % (super-new)
-    (define/private (do-paint dc resolution map-center polygons)
+
+    (define/private (paint-borders dc resolution map-center polygons)
       (let-values ([(canvas-width canvas-height) (send dc get-size)])
         (let ([aeq-projection* (aeq-projection map-center)]
               [bounds (aeq-bounds resolution canvas-width canvas-height)])
@@ -127,11 +130,25 @@
            (lambda (polygon)
              (for-each
               (lambda (ring)
-                (render-points dc aeq-projection* bounds resolution canvas-width canvas-height ring))
+                (render-polygon-points dc aeq-projection* bounds resolution canvas-width canvas-height ring))
               (polygon-rings polygon)))
            polygons))))
 
-    (define/public (paint-map canvas dc)
+    (define/private (paint-cities dc resolution map-center points)
+      (let-values ([(canvas-width canvas-height) (send dc get-size)])
+        (let ([aeq-projection* (aeq-projection map-center)]
+              [bounds (aeq-bounds resolution canvas-width canvas-height)]
+              [original-brush (send dc get-brush)])
+          (send dc set-brush (new brush% [color "black"]))
+          (for-each
+           (lambda (point)
+             (let* ([coordinate (projection-transform WGS-84 aeq-projection* (point-coordinate point))]
+                    [px (aeq-to-pixel coordinate resolution canvas-width canvas-height)])
+               (send dc draw-rectangle (pixel-x px) (pixel-y px) (* resolution 10000) (* resolution 10000))))
+           points)
+          (send dc set-brush original-brush))))
+
+    (define/public (paint-canvas canvas dc)
       (let-values ([(canvas-width canvas-height) (send dc get-size)])
         (let* ([start (current-inexact-milliseconds)]
                [resolution (send canvas get-resolution)]
@@ -146,17 +163,19 @@
 
                [viewport-min-wgs84 (aeq-to-wgs84 map-center viewport-min-aeq)]
                [viewport-max-wgs84 (aeq-to-wgs84 map-center viewport-max-aeq)])
-          (printf "@paint-map begin [~a, ~a] @ ~a~%" viewport-min-wgs84 viewport-max-wgs84 resolution)
+          (printf "@paint-canvas begin [~a, ~a] @ ~a~%" viewport-min-wgs84 viewport-max-wgs84 resolution)
 
           (send canvas suspend-flush)
           ;; (profile-thunk
           ;;  (thunk
-          (do-paint dc resolution map-center
-                   (find-shapes-cached borders-shape-file borders-index-file viewport-min-wgs84 viewport-max-wgs84))
+          (paint-borders dc resolution map-center
+                         (find-shapes-cached borders-shape-file borders-index-file viewport-min-wgs84 viewport-max-wgs84))
+          (paint-cities dc resolution map-center
+                        (find-shapes-cached cities-shape-file cities-index-file viewport-min-wgs84 viewport-max-wgs84))
           ;; ))
           (send canvas resume-flush)
 
-          (printf "@paint-map end, took ~a ms~%" (- (current-inexact-milliseconds) start)))))))
+          (printf "@paint-canvas end, took ~a ms~%" (- (current-inexact-milliseconds) start)))))))
 
 
 (define map-canvas% (map-rendering-mixin (zoomable-mixin (doubleclick-mixin (draggable-mixin (map-state-mixin canvas%))))))
@@ -165,10 +184,10 @@
 ;;;
 ;;; Polygon rendering
 ;;;
-(define (render-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
-                                   #:current-coordinate [current-coordinate #f]
-                                   #:dc-path [dc-path (new dc-path%)]
-                                   #:path-started [path-started #f])
+(define (render-polygon-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
+                                           #:current-coordinate [current-coordinate #f]
+                                           #:dc-path [dc-path (new dc-path%)]
+                                           #:path-started [path-started #f])
   (let* ([current-in-aeq (if current-coordinate current-coordinate
                              (projection-transform WGS-84 projection (car points)))]
          [next-in-aeq (projection-transform WGS-84 projection (cadr points))]
@@ -181,25 +200,25 @@
               (send dc-path line-to (pixel-x px) (pixel-y px))
               (send dc-path move-to (pixel-x px) (pixel-y px)))
 
-          (render-points dc projection bounds resolution canvas-width canvas-height (cdr points)
-                         #:current-coordinate next-in-aeq
-                         #:dc-path dc-path
-                         #:path-started #t))
+          (render-polygon-points dc projection bounds resolution canvas-width canvas-height (cdr points)
+                                 #:current-coordinate next-in-aeq
+                                 #:dc-path dc-path
+                                 #:path-started #t))
 
         (if path-started
             (let ([px (aeq-to-pixel current-in-aeq resolution canvas-width canvas-height)])
               (send dc-path line-to (pixel-x px) (pixel-y px))
               (send dc draw-path dc-path)
-              (render-points dc projection bounds resolution canvas-width canvas-height (cdr points)
-                             #:current-coordinate next-in-aeq))
-            (render-points dc projection bounds resolution canvas-width canvas-height (cdr points)
-                           #:current-coordinate next-in-aeq
-                           #:dc-path dc-path)))))
+              (render-polygon-points dc projection bounds resolution canvas-width canvas-height (cdr points)
+                                     #:current-coordinate next-in-aeq))
+            (render-polygon-points dc projection bounds resolution canvas-width canvas-height (cdr points)
+                                   #:current-coordinate next-in-aeq
+                                   #:dc-path dc-path)))))
 
-(define (render-points-exactly-one dc projection bounds resolution canvas-width canvas-height points
-                                   #:current-coordinate [current-coordinate #f]
-                                   #:dc-path [dc-path (new dc-path%)]
-                                   #:path-started [path-started #f])
+(define (render-polygon-points-exactly-one dc projection bounds resolution canvas-width canvas-height points
+                                           #:current-coordinate [current-coordinate #f]
+                                           #:dc-path [dc-path (new dc-path%)]
+                                           #:path-started [path-started #f])
   (when path-started
     (let ([px (aeq-to-pixel
                (if current-coordinate current-coordinate
@@ -208,32 +227,31 @@
       (send dc-path line-to (pixel-x px) (pixel-y px))
       (send dc draw-path dc-path))))
 
-(define (render-points dc projection bounds resolution canvas-width canvas-height points
-                       #:current-coordinate [current-coordinate #f]
-                       #:dc-path [dc-path (new dc-path%)]
-                       #:path-started [path-started #f])
+(define (render-polygon-points dc projection bounds resolution canvas-width canvas-height points
+                               #:current-coordinate [current-coordinate #f]
+                               #:dc-path [dc-path (new dc-path%)]
+                               #:path-started [path-started #f])
   (cond
     [(two-or-more-members points)
-     (render-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
-                                #:current-coordinate current-coordinate
-                                #:dc-path dc-path
-                                #:path-started path-started)]
+     (render-polygon-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
+                                        #:current-coordinate current-coordinate
+                                        #:dc-path dc-path
+                                        #:path-started path-started)]
 
     [(exactly-one-member points)
-     (render-points-exactly-one dc projection bounds resolution canvas-width canvas-height points
-                                #:current-coordinate current-coordinate
-                                #:dc-path dc-path
-                                #:path-started path-started)]
+     (render-polygon-points-exactly-one dc projection bounds resolution canvas-width canvas-height points
+                                        #:current-coordinate current-coordinate
+                                        #:dc-path dc-path
+                                        #:path-started path-started)]
     [else
      (printf "No match: ~a~%" points)]))
-
 
 ;;
 ;; Exposed
 ;;
 (define (make-map parent status-line-callback)
   (let* ([initial-wgs84-center (lonlat 24.935 60.19)]
-         [callback-wrapper (lambda (canvas dc) (send canvas paint-map canvas dc))]
+         [callback-wrapper (lambda (canvas dc) (send canvas paint-canvas canvas dc))]
 	 [map-canvas (new map-canvas% [parent parent] [paint-callback callback-wrapper])])
     (send map-canvas set-center initial-wgs84-center)
     map-canvas))

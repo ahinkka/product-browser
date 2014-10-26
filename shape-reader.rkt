@@ -11,6 +11,8 @@
 (provide
  polygon
  polygon-rings
+ point
+ point-coordinate
  find-shapes
  find-shapes-cached)
 
