@@ -117,7 +117,8 @@
     (define/override (on-char event)
       (match (send event get-key-code)
         ['wheel-up (send this zoom-in)]
-        ['wheel-down (send this zoom-out)]))))
+        ['wheel-down (send this zoom-out)]
+        [else #f]))))
 
 (define (map-rendering-mixin %)
   (class % (super-new)
@@ -143,8 +144,12 @@
           (for-each
            (lambda (point)
              (let* ([coordinate (projection-transform WGS-84 aeq-projection* (point-coordinate point))]
-                    [px (aeq-to-pixel coordinate resolution canvas-width canvas-height)])
-               (send dc draw-rectangle (pixel-x px) (pixel-y px) (* resolution 10000) (* resolution 10000))))
+                    [px (aeq-to-pixel coordinate resolution canvas-width canvas-height)]
+                    [square-side-length (* resolution 10000)])
+               (send dc draw-rectangle 
+                     (- (pixel-x px) (/ square-side-length 2))
+                     (- (pixel-y px) (/ square-side-length 2))
+                     square-side-length square-side-length)))
            points)
           (send dc set-brush original-brush))))
 
