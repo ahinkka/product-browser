@@ -72,7 +72,9 @@
   (lambda ()
     (let loop ()
       (define v (sync map-log-receiver))
-      (printf "[~a] ~a" (vector-ref v 0) (vector-ref v 1))
+      (define line (format "[~a] ~a" (vector-ref v 0) (vector-ref v 1)))
+      (printf line)
+      (send frame set-status-text line)
       (loop)))))
 
 (send frame show #t)
