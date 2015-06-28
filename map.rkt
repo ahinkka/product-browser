@@ -5,7 +5,9 @@
 (require "shape-reader.rkt")
 (require "projection.rkt")
 
-(provide make-map)
+(provide make-map map-logger)
+
+(define-logger map)
 
 (module+ test
   (require rackunit)
@@ -30,14 +32,14 @@
     (field (map-center #f))
 
     (define/public (zoom-out)
-      (printf "Zoom out from ~a~%" zoom-level)
+      (log-map-info "Zoom out from ~a~%" zoom-level)
       (let ([new-zoom-level (- zoom-level 1)])
 	(when (> new-zoom-level 0)
 	  (set! zoom-level new-zoom-level)
 	  (send this refresh))))
 
     (define/public (zoom-in)
-      (printf "Zoom in from ~a~%" zoom-level)
+      (log-map-info "Zoom in from ~a~%" zoom-level)
       (let ([new-zoom-level (+ zoom-level 1)])
 	(when (< new-zoom-level (length resolutions))
 	  (set! zoom-level new-zoom-level)
@@ -62,7 +64,7 @@
                   (let-values ([(canvas-width canvas-height) (send this get-size)])
                     (let* ([aeq-coordinate (pixel-to-aeq (pixel x y) (send this get-resolution) canvas-width canvas-height)]
                            [coordinate (aeq-to-wgs84 (send this get-center) aeq-coordinate)])
-                      (printf "Centering on ~a~%" coordinate)
+                      (log-map-info "Centering on ~a~%" coordinate)
                       (send this set-center coordinate)))
                   (set! last-left-down #f))
                 (set! last-left-down (current-inexact-milliseconds)))
@@ -80,12 +82,12 @@
 
         (when (send event dragging?)
           (unless drag-start-event (set! drag-start-event event))
-          (printf "Dragging: ~a (~a, ~a)~%" event x y))
+          (log-map-debug "Dragging: ~a (~a, ~a)~%" event x y))
 
         (when (and drag-start-event (eq? (send event get-event-type) 'left-up))
-          (printf "Drag start: ~a (~a, ~a)~%" drag-start-event
+          (log-map-debug "Drag start: ~a (~a, ~a)~%" drag-start-event
                   (send drag-start-event get-x) (send drag-start-event get-y))
-          (printf "Drag end: ~a (~a, ~a)~%" event x y)
+          (log-map-debug "Drag end: ~a (~a, ~a)~%" event x y)
 
           (let-values ([(canvas-width canvas-height) (send this get-size)])
             (let* ([map-center (send this get-center)]
@@ -168,7 +170,7 @@
 
                [viewport-min-wgs84 (aeq-to-wgs84 map-center viewport-min-aeq)]
                [viewport-max-wgs84 (aeq-to-wgs84 map-center viewport-max-aeq)])
-          (printf "@paint-canvas begin [~a, ~a] @ ~a~%" viewport-min-wgs84 viewport-max-wgs84 resolution)
+          (log-map-debug "paint-canvas [~a, ~a] @ ~a~%" viewport-min-wgs84 viewport-max-wgs84 resolution)
 
           (send canvas suspend-flush)
           ;; (profile-thunk
@@ -180,7 +182,7 @@
           ;; ))
           (send canvas resume-flush)
 
-          (printf "@paint-canvas end, took ~a ms~%" (- (current-inexact-milliseconds) start)))))))
+          (log-map-debug "paint-canvas took ~a ms~%" (- (current-inexact-milliseconds) start)))))))
 
 
 (define map-canvas% (map-rendering-mixin (zoomable-mixin (doubleclick-mixin (draggable-mixin (map-state-mixin canvas%))))))
@@ -249,7 +251,7 @@
                                         #:dc-path dc-path
                                         #:path-started path-started)]
     [else
-     (printf "No match: ~a~%" points)]))
+     (log-map-warning "No match: ~a~%" points)]))
 
 ;;
 ;; Exposed
