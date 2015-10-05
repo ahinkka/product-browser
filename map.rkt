@@ -2,21 +2,12 @@
 (require profile)
 (require racket/gui/base)
 (require "common.rkt")
-(require "shape-reader.rkt")
 (require "projection.rkt")
 
 (provide make-map map-logger)
 
 (define-logger map)
 
-(module+ test
-  (require rackunit)
-  (define ε 1e-10))
-
-(define borders-shape-file "data/TM_WORLD_BORDERS-0.3.shp")
-(define cities-shape-file "data/cities.shp")
-(define borders-index-file "data/TM_WORLD_BORDERS-0.3.idx")
-(define cities-index-file "data/cities.idx")
 
 (define (halved number times)
   (if (<= times 1)
@@ -125,35 +116,43 @@
 (define (map-rendering-mixin %)
   (class % (super-new)
 
-    (define/private (paint-borders dc resolution map-center polygons)
+    (define/private (paint-map dc resolution map-center)
       (let-values ([(canvas-width canvas-height) (send dc get-size)])
-        (let ([aeq-projection* (aeq-projection map-center)]
+        (let ([aeq-projection-code (aeq-projection-proj4-code map-center)]
               [bounds (aeq-bounds resolution canvas-width canvas-height)])
-          (for-each
-           (lambda (polygon)
-             (for-each
-              (lambda (ring)
-                (render-polygon-points dc aeq-projection* bounds resolution canvas-width canvas-height ring))
-              (polygon-rings polygon)))
-           polygons))))
 
-    (define/private (paint-cities dc resolution map-center points)
-      (let-values ([(canvas-width canvas-height) (send dc get-size)])
-        (let ([aeq-projection* (aeq-projection map-center)]
-              [bounds (aeq-bounds resolution canvas-width canvas-height)]
-              [original-brush (send dc get-brush)])
-          (send dc set-brush (new brush% [color "black"]))
-          (for-each
-           (lambda (point)
-             (let* ([coordinate (projection-transform WGS-84 aeq-projection* (point-coordinate point))]
-                    [px (aeq-to-pixel coordinate resolution canvas-width canvas-height)]
-                    [square-side-length (* resolution 10000)])
-               (send dc draw-rectangle 
-                     (- (pixel-x px) (/ square-side-length 2))
-                     (- (pixel-y px) (/ square-side-length 2))
-                     square-side-length square-side-length)))
-           points)
-          (send dc set-brush original-brush))))
+	  (log-map-info "In paint-map~%")
+	  (let-values
+	      ([(p p-out p-in p-err)
+		(subprocess #f #f #f "/usr/bin/python" "mapnik_render.py"
+			    (number->string canvas-width) (number->string canvas-height)
+			    (number->string (lonlat-longitude (car bounds)))
+			    (number->string (lonlat-latitude (car bounds)))
+			    (number->string (lonlat-longitude (cdr bounds)))
+			    (number->string (lonlat-latitude (cdr bounds)))
+			    aeq-projection-code)])
+	    (log-map-debug "Waiting for rendering to end...~%")
+	    (sync/timeout 1.5 p)
+	    ;; (subprocess-wait p)
+	    (log-map-debug "Subprocess done.~%")
+	    (let ([status (subprocess-status p)]) 
+	      (when (eq? 'running status)
+		(subprocess-kill p #t)
+		(set! status 'killed))
+	      (if (not (eq? 0 status))
+		  (begin
+		    (log-map-debug "Process not finished: ~a~%" p)
+		    ;; (log-map-debug "~a~%" (port->string p-err))
+		    (log-map-debug "exit code: ~a~%" status))
+		  (begin
+		    (let* ([bitmap (read-bitmap p-out 'png #f #t)])
+		      (log-map-debug "Bitmap loaded.~%")
+		      (send dc draw-bitmap bitmap 0 0)
+		      (log-map-debug "Bitmap drawn.~%")))))
+
+	    (close-input-port p-out)
+	    (close-output-port p-in)
+	    (close-input-port p-err)))))
 
     (define/public (paint-canvas canvas dc)
       (let-values ([(canvas-width canvas-height) (send dc get-size)])
@@ -173,85 +172,13 @@
           (log-map-debug "paint-canvas [~a, ~a] @ ~a~%" viewport-min-wgs84 viewport-max-wgs84 resolution)
 
           (send canvas suspend-flush)
-          ;; (profile-thunk
-          ;;  (thunk
-          (paint-borders dc resolution map-center
-                         (find-shapes-cached borders-shape-file borders-index-file viewport-min-wgs84 viewport-max-wgs84))
-          (paint-cities dc resolution map-center
-                        (find-shapes-cached cities-shape-file cities-index-file viewport-min-wgs84 viewport-max-wgs84))
-          ;; ))
+          (paint-map dc resolution map-center)
           (send canvas resume-flush)
 
           (log-map-debug "paint-canvas took ~a ms~%" (- (current-inexact-milliseconds) start)))))))
 
-
 (define map-canvas% (map-rendering-mixin (zoomable-mixin (doubleclick-mixin (draggable-mixin (map-state-mixin canvas%))))))
 
-
-;;;
-;;; Polygon rendering
-;;;
-(define (render-polygon-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
-                                           #:current-coordinate [current-coordinate #f]
-                                           #:dc-path [dc-path (new dc-path%)]
-                                           #:path-started [path-started #f])
-  (let* ([current-in-aeq (if current-coordinate current-coordinate
-                             (projection-transform WGS-84 projection (car points)))]
-         [next-in-aeq (projection-transform WGS-84 projection (cadr points))]
-         [current-in-bounds (within-aeq-bounds bounds current-in-aeq)]
-         [next-in-bounds (within-aeq-bounds bounds next-in-aeq)])
-
-    (if (or current-in-bounds next-in-bounds)
-        (let ([px (aeq-to-pixel current-in-aeq resolution canvas-width canvas-height)])
-          (if path-started
-              (send dc-path line-to (pixel-x px) (pixel-y px))
-              (send dc-path move-to (pixel-x px) (pixel-y px)))
-
-          (render-polygon-points dc projection bounds resolution canvas-width canvas-height (cdr points)
-                                 #:current-coordinate next-in-aeq
-                                 #:dc-path dc-path
-                                 #:path-started #t))
-
-        (if path-started
-            (let ([px (aeq-to-pixel current-in-aeq resolution canvas-width canvas-height)])
-              (send dc-path line-to (pixel-x px) (pixel-y px))
-              (send dc draw-path dc-path)
-              (render-polygon-points dc projection bounds resolution canvas-width canvas-height (cdr points)
-                                     #:current-coordinate next-in-aeq))
-            (render-polygon-points dc projection bounds resolution canvas-width canvas-height (cdr points)
-                                   #:current-coordinate next-in-aeq
-                                   #:dc-path dc-path)))))
-
-(define (render-polygon-points-exactly-one dc projection bounds resolution canvas-width canvas-height points
-                                           #:current-coordinate [current-coordinate #f]
-                                           #:dc-path [dc-path (new dc-path%)]
-                                           #:path-started [path-started #f])
-  (when path-started
-    (let ([px (aeq-to-pixel
-               (if current-coordinate current-coordinate
-                   (projection-transform WGS-84 projection (car points)))
-               resolution canvas-width canvas-height)])
-      (send dc-path line-to (pixel-x px) (pixel-y px))
-      (send dc draw-path dc-path))))
-
-(define (render-polygon-points dc projection bounds resolution canvas-width canvas-height points
-                               #:current-coordinate [current-coordinate #f]
-                               #:dc-path [dc-path (new dc-path%)]
-                               #:path-started [path-started #f])
-  (cond
-    [(two-or-more-members points)
-     (render-polygon-points-two-or-more dc projection bounds resolution canvas-width canvas-height points
-                                        #:current-coordinate current-coordinate
-                                        #:dc-path dc-path
-                                        #:path-started path-started)]
-
-    [(exactly-one-member points)
-     (render-polygon-points-exactly-one dc projection bounds resolution canvas-width canvas-height points
-                                        #:current-coordinate current-coordinate
-                                        #:dc-path dc-path
-                                        #:path-started path-started)]
-    [else
-     (log-map-warning "No match: ~a~%" points)]))
 
 ;;
 ;; Exposed

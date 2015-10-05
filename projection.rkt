@@ -15,6 +15,7 @@
 	 WGS-84
 	 EPSG-3857
 	 aeq-projection
+	 aeq-projection-proj4-code
 
 	 wgs84-to-web-mercator
 	 web-mercator-to-aeq
@@ -42,12 +43,14 @@
   (printf "Couldn't define Web Mercator!~%"))
 
 (define (aeq-projection center-coordinate)
-  (let ([projection (pj_init_plus
-		     (format "+proj=aeqd  +lat_0=~a +lon_0=~a"
-			     (lonlat-latitude center-coordinate)
-			     (lonlat-longitude center-coordinate)))])
+  (let ([projection (pj_init_plus (aeq-projection-proj4-code center-coordinate))])
     (register-finalizer projection pj_free)
     projection))
+
+(define (aeq-projection-proj4-code center-coordinate)
+  (format "+proj=aeqd +lat_0=~a +lon_0=~a"
+	  (lonlat-latitude center-coordinate)
+	  (lonlat-longitude center-coordinate)))
 
 (define (projection-transform from-projection to-projection coordinate)
   (let ([x-ptr (malloc (ctype-sizeof _double) 'atomic)]
